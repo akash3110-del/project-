@@ -1,0 +1,364 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+
+from google.colab import drive
+drive.mount('/content/drive')
+
+df=pd.read_csv('/content/drive/MyDrive/train_v2_drcat_02.csv')
+
+df.head()
+
+seven_text_data = df[df['RDizzl3_seven'] == True]
+
+df
+
+label_seven_mapping = df.set_index('label')['RDizzl3_seven'].to_dict()
+label_seven_mapping
+
+
+import re
+import string
+import nltk
+from nltk.tokenize import word_tokenize
+from nltk.stem import WordNetLemmatizer
+
+# Ensure necessary NLTK data is downloaded
+nltk.download('punkt', quiet=True)
+nltk.download('wordnet', quiet=True)
+nltk.download('punkt_tab', quiet=True) # Ensure this is also downloaded
+
+# Function to clean text
+def clean_text(text):
+    """
+    Removes unnecessary characters, punctuation, and digits from the text.
+    """
+    if not isinstance(text, str):
+        return ""
+
+    # Remove digits
+    text = re.sub(r'\d+', '', text)
+
+    # Remove punctuation
+    text = text.translate(str.maketrans('', '', string.punctuation))
+
+    # Remove special characters or non-ASCII
+    text = re.sub(r'[^\x00-\x7F]+', '', text)  # Optional: keep only ASCII
+
+    # Remove extra spaces
+    text = re.sub(r'\s+', ' ', text).strip()
+
+    return text
+
+
+
+from sklearn.model_selection import train_test_split
+# Split the data into training and testing sets
+train_df, test_df = train_test_split(df, test_size=0.2, random_state=42)
+
+print("Training set shape:", train_df.shape)
+print("Testing set shape:", test_df.shape)
+
+# Function to tokenize and lemmatize
+lemmatizer = WordNetLemmatizer()
+def tokenize_and_lemmatize(text):
+    if not isinstance(text, str):
+        return []
+    tokens = word_tokenize(text)
+    return [lemmatizer.lemmatize(token) for token in tokens]
+
+# Apply cleaning, tokenization, and lemmatization to seven_text_data
+seven_text_data['cleaned_text'] = seven_text_data['text'].apply(clean_text)
+seven_text_data['lemmatized_tokens'] = seven_text_data['cleaned_text'].apply(tokenize_and_lemmatize)
+
+print("Added 'cleaned_text' and 'lemmatized_tokens' columns to seven_text_data.")
+print(seven_text_data[['text', 'cleaned_text', 'lemmatized_tokens']].head())
+
+#=== Imports ===
+!pip install gensim
+import pandas as pd
+import numpy as np
+from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
+from gensim.models import FastText
+from sentence_transformers import SentenceTransformer
+# Step 1: Reconstruct text from tokens
+seven_text_data['lemmatized_text'] = seven_text_data['lemmatized_tokens'].apply(lambda tokens: ' '.join(tokens))
+# Step 2: Bag of Words (BoW)
+bow_vectorizer = CountVectorizer()
+bow_matrix = bow_vectorizer.fit_transform(seven_text_data['lemmatized_text'])
+# Step 3: TF-IDF with L2 norm, smoothing, and sublinear TF
+tfidf_vectorizer = TfidfVectorizer(
+    norm='l2',             # L2 normalization
+    smooth_idf=True,       # Prevents division by zero
+    sublinear_tf=True      # Use TF = 1 + log(TF)
+)
+tfidf_matrix = tfidf_vectorizer.fit_transform(seven_text_data['lemmatized_text'])
+# Step 4: fastText Embeddings (Custom-trained)
+tokens_list = seven_text_data['lemmatized_tokens'].tolist()
+fasttext_model = FastText(
+    sentences=tokens_list,
+    vector_size=300,  # vector dimensionality
+    window=5,
+    min_count=3,
+    sg=1,  # 0 = CBOW, 1 = Skip-gram
+    min_n=3,
+    max_n=6,
+    bucket=200000,
+    epochs=1
+)
+# Function to get average embedding for each document
+def get_fasttext_embedding(tokens):
+    vectors = [fasttext_model.wv[token] for token in tokens if token in fasttext_model.wv]
+    return np.mean(vectors, axis=0) if vectors else np.zeros(300)
+seven_text_data['fasttext_embedding'] = seven_text_data['lemmatized_tokens'].apply(get_fasttext_embedding)
+# Step 5: Pre-trained fastText embeddings (Optional)
+# Download from: https://fasttext.cc/docs/en/english-vectors.html
+# from gensim.models import KeyedVectors
+# pretrained_model = KeyedVectors.load_word2vec_format('cc.en.300.vec.gz', binary=False)
+# Step 6: Transformer-Based Sentence Embeddings
+minilm_model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
+distilbert_model = SentenceTransformer('sentence-transformers/distilbert-base-nli-stsb-mean-tokens')
+seven_text_data['minilm_embedding'] = seven_text_data['lemmatized_text'].apply(lambda x: minilm_model.encode(x))
+seven_text_data['distilbert_embedding'] = seven_text_data['lemmatized_text'].apply(lambda x: distilbert_model.encode(x))
+# === Output Sample ===
+print("BoW Matrix shape:", bow_matrix.shape)
+print("TF-IDF Matrix shape:", tfidf_matrix.shape)
+print("Sample fastText vector:", seven_text_data['fasttext_embedding'].iloc[0][:5])
+print("Sample MiniLM vector:", seven_text_data['minilm_embedding'].iloc[0][:5])
+print("Sample DistilBERT vector:", seven_text_data['distilbert_embedding'].iloc[0][:5])
+
+
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
+from xgboost import XGBClassifier
+from lightgbm import LGBMClassifier
+from sklearn.metrics import classification_report
+import numpy as np
+# === Step 0: Setup ===
+# Replace with your actual label column name
+X_bow = bow_matrix
+X_tfidf = tfidf_matrix
+X_fasttext = np.vstack(seven_text_data['fasttext_embedding'].values)
+X_minilm = np.vstack(seven_text_data['minilm_embedding'].values)
+X_distilbert = np.vstack(seven_text_data['distilbert_embedding'].values)
+
+y = seven_text_data['label']
+
+# === Train/Test Split ===
+# The split should be done on the feature matrices and the target variable y
+# Make sure the random_state is the same for all splits to ensure consistency
+X_train_bow, X_test_bow, y_train, y_test = train_test_split(X_bow, y, test_size=0.2, random_state=42)
+X_train_tfidf, X_test_tfidf, _, _ = train_test_split(X_tfidf, y, test_size=0.2, random_state=42)
+X_train_fast, X_test_fast, _, _ = train_test_split(X_fasttext, y, test_size=0.2, random_state=42)
+X_train_minilm, X_test_minilm, _, _ = train_test_split(X_minilm, y, test_size=0.2, random_state=42)
+X_train_distilbert, X_test_distilbert, _, _ = train_test_split(X_distilbert, y, test_size=0.2, random_state=42)
+
+
+# === Helper Function for Evaluation ===
+def evaluate(model, X_train, X_test, y_train, y_test, model_name):
+    model.fit(X_train, y_train)
+    preds = model.predict(X_test)
+    print(f"\n--- {model_name} ---")
+    print(classification_report(y_test, preds))
+
+# === Logistic Regression ===
+log_reg = LogisticRegression(max_iter=1000)
+evaluate(log_reg, X_train_bow, X_test_bow, y_train, y_test, "Logistic Regression (BoW)")
+evaluate(log_reg, X_train_tfidf, X_test_tfidf, y_train, y_test, "Logistic Regression (TF-IDF)")
+
+# === Random Forest ===
+# Removed max_iter as it's not a valid parameter for RandomForestClassifier
+rf = RandomForestClassifier(random_state=42)
+evaluate(rf, X_train_bow, X_test_bow, y_train, y_test, "Random Forest (BoW)")
+evaluate(rf, X_train_fast, X_test_fast, y_train, y_test, "Random Forest (fastText)")
+
+# === XGBoost ===
+xgb = XGBClassifier(
+    eval_metric='logloss',
+    n_estimators=100,
+    use_label_encoder=False,
+    random_state=42
+)
+evaluate(xgb, X_train_tfidf, X_test_tfidf, y_train, y_test, "XGBoost (TF-IDF)")
+evaluate(xgb, X_train_minilm, X_test_minilm, y_train, y_test, "XGBoost (MiniLM)")
+
+# === LightGBM ===
+lgbm = LGBMClassifier(
+    objective='binary',
+    metric='binary_logloss',
+    boosting_type='gbdt',
+    learning_rate=0.1,
+    num_leaves=40,
+    min_data_in_leaf=150,
+    max_depth=8,
+    n_estimators=100,
+    random_state=42
+)
+evaluate(lgbm, X_train_distilbert, X_test_distilbert, y_train, y_test, "LightGBM (DistilBERT)")
+evaluate(lgbm, X_train_fast, X_test_fast, y_train, y_test, "LightGBM (fastText)")
+
+from sklearn.metrics import confusion_matrix, precision_score, recall_score, f1_score, matthews_corrcoef, accuracy_score
+import numpy as np
+
+def evaluate_with_custom_metrics(y_true, y_pred, model_name="Model"):
+    # Get confusion matrix components
+    tn, fp, fn, tp = confusion_matrix(y_true, y_pred).ravel()
+
+    # Basic metrics
+    acc = accuracy_score(y_true, y_pred) * 100
+    precision = precision_score(y_true, y_pred, zero_division=0) * 100
+    recall = recall_score(y_true, y_pred, zero_division=0) * 100  # Sensitivity / TPR
+    specificity = (tn / (tn + fp)) * 100 if (tn + fp) > 0 else 0
+    f1 = f1_score(y_true, y_pred, zero_division=0) * 100
+
+    # Matthews Correlation Coefficient (MCC)
+    mcc_numerator = (tp * tn) - (fp * fn)
+    mcc_denominator = np.sqrt((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn))
+    mcc = mcc_numerator / mcc_denominator if mcc_denominator > 0 else 0
+
+    # Print results
+    print(f"\n Evaluation for: {model_name}")
+    print(f"Accuracy       : {acc:.2f}%")
+    print(f"Precision (P)  : {precision:.2f}%")
+    print(f"Recall (TPR)   : {recall:.2f}%")
+    print(f"Specificity    : {specificity:.2f}%")
+    print(f"F1-Score       : {f1:.2f}%")
+    print(f"MCC            : {mcc:.4f}")
+    print(f"Confusion Matrix: TP={tp}, TN={tn}, FP={fp}, FN={fn}")
+# You can loop through multiple models like this:
+models = {
+    "Logistic Regression": log_reg,
+    "Random Forest": rf,
+    "XGBoost": xgb,
+    "LightGBM": lgbm
+}
+X_sets = {
+    "TF-IDF": (X_train_tfidf, X_test_tfidf),
+    "BoW": (X_train_bow, X_test_bow),
+    "fastText": (X_train_fast, X_test_fast),
+    "MiniLM": (X_train_minilm, X_test_minilm),
+    "DistilBERT": (X_train_distilbert, X_test_distilbert)
+}
+
+# Run evaluation on one or more models
+for model_name, model in models.items():
+    for feat_name, (X_train_feat, X_test_feat) in X_sets.items():
+        # Explicitly convert sparse matrices to float32 for LightGBM
+        if feat_name in ["TF-IDF", "BoW"] and model_name == "LightGBM":
+            X_train_feat = X_train_feat.astype(np.float32)
+            X_test_feat = X_test_feat.astype(np.float32)
+
+        model.fit(X_train_feat, y_train)
+        y_pred = model.predict(X_test_feat)
+        evaluate_with_custom_metrics(y_test, y_pred, model_name=f"{model_name} ({feat_name})")
+
+# prompt: make a confusion matrix of all
+
+import matplotlib.pyplot as plt
+import numpy as np
+def plot_confusion_matrix(y_true, y_pred, labels, title='Confusion Matrix'):
+
+    cm = confusion_matrix(y_true, y_pred, labels=labels)
+    plt.figure(figsize=(8, 6))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=labels, yticklabels=labels)
+    plt.title(title)
+    plt.xlabel('Predicted Label')
+    plt.ylabel('True Label')
+    plt.show()
+
+all_labels = sorted(list(y_test.unique()))
+
+
+# Make confusion matrices for all trained models and their feature sets
+for model_name, model in models.items():
+    for feat_name, (X_train_feat, X_test_feat) in X_sets.items():
+        # Explicitly convert sparse matrices to float32 for LightGBM if needed
+        if feat_name in ["TF-IDF", "BoW"] and model_name == "LightGBM":
+            X_train_feat = X_train_feat.astype(np.float32)
+            X_test_feat = X_test_feat.astype(np.float32)
+
+        # Re-fit the model to ensure it's trained on the current feature set
+        model.fit(X_train_feat, y_train)
+        y_pred = model.predict(X_test_feat)
+
+        plot_confusion_matrix(y_test, y_pred, labels=all_labels, title=f'Confusion Matrix: {model_name} ({feat_name})')
+
+
+
+import pandas as pd
+import matplotlib.pyplot as plt
+import numpy as np
+# Extract metrics for plotting
+results = {}
+for model_name, model in models.items():
+    for feat_name, (X_train_feat, X_test_feat) in X_sets.items():
+        # Explicitly convert sparse matrices to float32 for LightGBM
+        if feat_name in ["TF-IDF", "BoW"] and model_name == "LightGBM":
+            X_train_feat_processed = X_train_feat.astype(np.float32)
+            X_test_feat_processed = X_test_feat.astype(np.float32)
+        else:
+            X_train_feat_processed = X_train_feat
+            X_test_feat_processed = X_test_feat
+
+
+
+        model.fit(X_train_feat_processed, y_train)
+        y_pred = model.predict(X_test_feat_processed)
+
+
+        # Calculate metrics
+        acc = accuracy_score(y_test, y_pred) * 100
+        precision = precision_score(y_test, y_pred, zero_division=0) * 100
+        recall = recall_score(y_test, y_pred, zero_division=0) * 100
+        specificity = (confusion_matrix(y_test, y_pred).ravel()[1] / (confusion_matrix(y_test, y_pred).ravel()[1] + confusion_matrix(y_test, y_pred).ravel()[0])) * 100 if (confusion_matrix(y_test, y_pred).ravel()[1] + confusion_matrix(y_test, y_pred).ravel()[0]) > 0 else 0 # Corrected Specificity calculation
+        f1 = f1_score(y_test, y_pred, zero_division=0) * 100
+
+        # Calculate MCC
+        tn, fp, fn, tp = confusion_matrix(y_test, y_pred).ravel()
+        mcc_numerator = (tp * tn) - (fp * fn)
+        mcc_denominator = np.sqrt((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn))
+        mcc = mcc_numerator / mcc_denominator if mcc_denominator > 0 else 0
+
+
+        key = f"{model_name} ({feat_name})"
+        results[key] = {
+            'Accuracy': acc,
+            'Precision': precision,
+            'Recall': recall,
+            'Specificity': specificity,
+            'F1-Score': f1,
+            'MCC': mcc
+        }
+
+
+# Convert results to a pandas DataFrame for easier plotting
+results_df = pd.DataFrame.from_dict(results, orient='index')
+
+
+# Plotting
+metrics_to_plot = ['Accuracy', 'Precision', 'Recall', 'F1-Score', 'MCC'] # Excluding Specificity for simplicity if needed
+
+
+plt.figure(figsize=(18, 10))
+sns.heatmap(results_df[metrics_to_plot].T, annot=True, fmt=".2f", cmap="YlGnBu")
+plt.title('Model Performance Comparison Across Different Feature Embeddings', fontsize=16)
+plt.xlabel('Model and Feature Combination', fontsize=14)
+plt.ylabel('Metric', fontsize=14)
+plt.xticks(rotation=45, ha='right')
+plt.yticks(rotation=0)
+plt.tight_layout()
+plt.show()
+
+# Optional: Plotting each metric individually for clearer comparison
+for metric in metrics_to_plot:
+    plt.figure(figsize=(12, 6))
+    results_df[metric].sort_values(ascending=False).plot(kind='bar')
+    plt.title(f'{metric} Comparison by Model and Feature', fontsize=16)
+    plt.xlabel('Model and Feature Combination', fontsize=14)
+    plt.ylabel(metric, fontsize=14)
+    plt.xticks(rotation=45, ha='right')
+    plt.tight_layout()
+    plt.show()
